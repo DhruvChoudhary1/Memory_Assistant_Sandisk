@@ -1,61 +1,105 @@
-import google.generativeai as genai
-from app.config import settings
+import os
+import traceback
+from typing import List, Optional
+from google import genai
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 
-if settings.GEMINI_API_KEY:
-    genai.configure(api_key=settings.GEMINI_API_KEY)
-    # NOTE: the older client may not support newer model names reliably.
-    # We keep the configured model but always fall back gracefully on errors.
-    model = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    model = None
+# --- Load .env file ---
+load_dotenv()
 
+# --- Configuration ---
+class Settings(BaseSettings):
+    GEMINI_API_KEY: str
+    MODEL_NAME: str = "gemini-flash-latest"
 
-def _fallback_answer(query: str, memories: list[str]) -> str:
+settings = Settings()
+print("Loaded GEMINI_API_KEY:", settings.GEMINI_API_KEY)
+
+# --- Initialization ---
+try:
+    if settings.GEMINI_API_KEY:
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        # Debugging: verify connectivity
+        # models = client.models.list()  # Uncomment if you want to list models
+        print(f"Connected. Target Model: {settings.MODEL_NAME}")
+    else:
+        print("Warning: GEMINI_API_KEY not found.")
+        client = None
+except Exception as e:
+    print(f"Initialization Error: {e}")
+    client = None
+
+# --- Core Logic ---
+
+def _fallback_answer(query: str, memories: List[str]) -> str:
     """
-    Simple deterministic answer that does not rely on Gemini.
-    Used when the model is unavailable or errors.
+    Provides a graceful exit if the API is down or memories are missing.
     """
     if not memories:
         return (
-            f"I don't have any stored memories yet related to: '{query}'. "
-            "Try adding some memories first, then ask again."
+            f"I couldn't find any stored memories related to '{query}'. "
+            "Try adding some context first."
         )
-
-    joined = "\n- ".join(memories[:5])
+    
+    joined = "\n- ".join(memories[:3])
     return (
-        "I couldn't reach the Gemini model right now, "
-        "but here are the most relevant memories I found:\n\n"
-        f"- {joined}\n\n"
-        "Use these as context to answer your question."
+        "Note: I'm currently in offline mode. Based on your records, I found:\n"
+        f"{joined}\n\nDoes this help answer your question?"
     )
 
-
-def generate_answer(query, memories):
+def generate_answer(query: str, raw_memories: List[str]) -> str:
     """
-    Generate an answer using Gemini when possible.
-    If Gemini is not configured or returns an error (404 / network / etc),
-    return a safe, helpful fallback answer instead of raising 500.
+    Generates a response using Gemini 3.1 Flash based on retrieved context.
     """
-    if not model:
-        return _fallback_answer(query, memories)
+    if not client:
+        return _fallback_answer(query, raw_memories)
 
-    context = "\n".join(memories) if memories else "(No relevant memories found)"
-    prompt = f"""You are an AI personal memory assistant.
+    # 1. Context Preparation (RAG)
+    # In a real app, 'raw_memories' would come from a Vector DB search
+    context_text = "\n".join([f"• {m}" for m in raw_memories[:10]])
+    
+    # 2. Define the Persona & Task
+    system_instr = (
+        "You are a helpful Personal Memory Assistant. Your goal is to answer "
+        "questions using ONLY the provided memories. If the answer isn't in the "
+        "memories, say you don't know—do not hallucinate facts."
+    )
 
-User Question:
-{query}
-
-Relevant Memories:
-{context}
-
-Use the memories to answer clearly. If no relevant memories were found, say so politely."""
-
+    # 3. Execution
     try:
-        response = model.generate_content(prompt)
-        # Some client versions return .text, others .candidates; be defensive.
-        if hasattr(response, "text") and response.text:
+        response = client.models.generate_content(
+            model=settings.MODEL_NAME,
+            config={
+                "system_instruction": system_instr,
+                "temperature": 0.3, # Lower temperature for factual accuracy
+            },
+            contents=f"User Question: {query}\n\nRelevant Memories:\n{context_text}"
+        )
+
+        if response.text:
             return response.text
-        return _fallback_answer(query, memories)
-    except Exception:
-        # Any Gemini-related error should not crash the API.
-        return _fallback_answer(query, memories)
+        
+        return "I processed the request, but couldn't generate a text response."
+
+    except Exception as e:
+        print(f"\n[Gemini API Error]\n{e}")
+        # traceback.print_exc() # Uncomment for deep debugging
+        return _fallback_answer(query, raw_memories)
+
+# --- Execution Example ---
+if __name__ == "__main__":
+    # Mock data that would normally come from your database
+    user_query = "Where did I leave my spare house keys?"
+    retrieved_memories = [
+        "I put the spare keys in the blue ceramic jar on the kitchen counter on Oct 12.",
+        "The kitchen was remodeled last year.",
+        "I gave a set of keys to neighbor Sarah for emergencies."
+    ]
+
+    result = generate_answer(user_query, retrieved_memories)
+    
+    print("-" * 30)
+    print(f"QUERY: {user_query}")
+    print(f"AI RESPONSE:\n{result}")
+    print("-" * 30)
