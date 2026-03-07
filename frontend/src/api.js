@@ -8,8 +8,11 @@ const API = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-export const addMemory = async (text) => {
-  const res = await API.post("/memory", { text });
+export const addMemory = async (text, reminder_time = null, reminder_email = null) => {
+  const payload = { text };
+  if (reminder_time) payload.reminder_time = reminder_time;
+  if (reminder_email) payload.reminder_email = reminder_email;
+  const res = await API.post("/memory", payload);
   return res.data;
 };
 

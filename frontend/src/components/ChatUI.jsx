@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { chat } from "../api";
 
 export default function ChatUI() {
@@ -6,6 +6,8 @@ export default function ChatUI() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
 
   const sendQuery = async () => {
     if (!query.trim()) return;
@@ -25,6 +27,38 @@ export default function ChatUI() {
     }
   };
 
+  // Voice to text logic
+  const handleMicClick = () => {
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      alert('Speech recognition is not supported in this browser.');
+      return;
+    }
+    let SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!recognitionRef.current) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      recognitionRef.current.lang = 'en-US';
+      recognitionRef.current.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        setQuery((prev) => prev + (prev && !prev.endsWith(' ') ? ' ' : '') + transcript);
+      };
+      recognitionRef.current.onerror = (event) => {
+        setListening(false);
+      };
+      recognitionRef.current.onend = () => {
+        setListening(false);
+      };
+    }
+    if (!listening) {
+      setListening(true);
+      recognitionRef.current.start();
+    } else {
+      recognitionRef.current.stop();
+      setListening(false);
+    }
+  };
+
   return (
     <div className="chat-ui card">
       <div className="messages">
@@ -39,14 +73,26 @@ export default function ChatUI() {
         {loading && <div className="message message-ai typing">Thinking...</div>}
       </div>
       {error && <p className="error">{error}</p>}
-      <div className="chat-input">
+      <div className="chat-input" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && sendQuery()}
           placeholder="Ask your memories..."
           disabled={loading}
+          style={{ flex: 1 }}
         />
+        <button
+          type="button"
+          onClick={handleMicClick}
+          disabled={loading}
+          style={{ background: listening ? '#e0e0e0' : 'white', border: '1px solid #ccc', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 4 }}
+          title={listening ? 'Listening...' : 'Voice to text'}
+        >
+          <span role="img" aria-label="mic" style={{ color: listening ? 'red' : '#555', fontSize: 20 }}>
+            🎤
+          </span>
+        </button>
         <button onClick={sendQuery} disabled={loading || !query.trim()}>
           Ask
         </button>
